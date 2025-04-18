@@ -6,7 +6,8 @@ body {
 }
 
 header {
-    background: #333;
+    <!-- background: #333; -->
+    background: #2E473B;
     color: #2E473B;
     <!-- color: #FFF; -->
     padding: 20px 0;
