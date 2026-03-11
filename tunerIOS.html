@@ -416,159 +416,120 @@ const GUITAR_NOTES = [
   { name: 'B', octave: '3', freq: 246.94 },
   { name: 'E', octave: '4', freq: 329.63 },
 ];
-const SR = 44100;
 
-// ── Pre-compute sample arrays (no AudioContext needed yet) ────
-// Additive synthesis: sum of sine harmonics with 1/n amplitude = sawtooth
-// This is done at load time so clicking is instant.
-function makeSamples(freq) {
-  // Loop length = integer number of complete cycles → zero phase error at loop point
+function makeWavURL(freq) {
+  const SR = 44100;
+  // 20 seconds, rounded to exact whole cycles so loop point is seamless
   const samplesPerCycle = SR / freq;
-  const numCycles = Math.max(4, Math.ceil(freq)); // ≥1 sec of audio
-  const N = Math.round(samplesPerCycle) * numCycles;
+  const numCycles = Math.round(20 * freq); // ~20s worth of cycles
+  const numSamples = Math.round(samplesPerCycle) * numCycles;
+  const amp = 0.35;
 
-  // Cap harmonics below Nyquist for anti-aliasing
-  const maxH = Math.min(24, Math.floor(SR / 2 / freq));
+  const buf = new ArrayBuffer(44 + numSamples * 2);
+  const d = new DataView(buf);
+  function str(off, s) { for (let i=0;i<s.length;i++) d.setUint8(off+i, s.charCodeAt(i)); }
+  str(0,'RIFF'); d.setUint32(4, 36+numSamples*2, true);
+  str(8,'WAVE'); str(12,'fmt ');
+  d.setUint32(16,16,true); d.setUint16(20,1,true); d.setUint16(22,1,true);
+  d.setUint32(24,SR,true); d.setUint32(28,SR*2,true);
+  d.setUint16(32,2,true); d.setUint16(34,16,true);
+  str(36,'data'); d.setUint32(40,numSamples*2,true);
 
-  const data = new Float32Array(N);
-  for (let i = 0; i < N; i++) {
-    const phase = 2 * Math.PI * freq * i / SR;
-    let v = 0;
-    for (let h = 1; h <= maxH; h++) v += Math.sin(h * phase) / h;
-    data[i] = v * 0.22; // sawtooth normalisation ≈ 2/π, keep headroom
+  for (let i = 0; i < numSamples; i++) {
+    const phase = (i * freq / SR) % 1.0;
+    const sample = (phase * 2 - 1) * amp;
+    d.setInt16(44 + i*2, Math.round(sample * 32767), true);
   }
-  return data;
+
+  return URL.createObjectURL(new Blob([buf], {type:'audio/wav'}));
 }
 
 const ALL_NOTES = [...BASS_NOTES, ...GUITAR_NOTES];
-ALL_NOTES.forEach(n => { n.samples = makeSamples(n.freq); });
+ALL_NOTES.forEach(n => { n.url = makeWavURL(n.freq); });
 
-// ── Audio state ───────────────────────────────────────────────
-let AC          = null;
-let masterGain  = null;
-let currentSrc  = null;   // AudioBufferSourceNode
-let activeBtn   = null;
-let animFrame   = null;
-let wavePhase   = 0;
+let currentAudio = null;
+let activeBtn    = null;
+let animFrame    = null;
+let wavePhase    = 0;
 
-// ── UI refs ───────────────────────────────────────────────────
 const elNote = document.getElementById('displayNote');
 const elFreq = document.getElementById('displayFreq');
 const elLed  = document.getElementById('led');
 const slider = document.getElementById('volumeSlider');
 const elVol  = document.getElementById('volDisplay');
 const canvas = document.getElementById('waveCanvas');
-const c      = canvas.getContext('2d');
+const ctx2d  = canvas.getContext('2d');
 
-function volLevel() { return slider.value / 100 * 0.8; }
+function volLevel() { return slider.value / 100; }
 
-// ── Stop current source ───────────────────────────────────────
-function stopSrc() {
-  if (currentSrc) { try { currentSrc.stop(); } catch(e){} currentSrc = null; }
-  if (animFrame)  { cancelAnimationFrame(animFrame); animFrame = null; }
+function stopAudio() {
+  if (currentAudio) { currentAudio.pause(); currentAudio.currentTime = 0; currentAudio = null; }
+  if (animFrame)    { cancelAnimationFrame(animFrame); animFrame = null; }
 }
 
-// ── Create / unlock AudioContext (fully synchronous) ──────────
-function ensureAC() {
-  if (AC) return;
-  AC = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SR });
-  masterGain = AC.createGain();
-  masterGain.gain.value = volLevel();
-  masterGain.connect(AC.destination);
-
-  // iOS silent-buffer unlock — must happen synchronously in the gesture
-  const silBuf = AC.createBuffer(1, 1, SR);
-  const sil = AC.createBufferSource();
-  sil.buffer = silBuf;
-  sil.connect(AC.destination);
-  sil.start(0);
-
-  // Belt-and-suspenders resume (no await — fire and forget)
-  if (AC.state === 'suspended') AC.resume();
-}
-
-// ── Main click handler (100% synchronous — no await anywhere) ─
-function handleClick(note, btn) {
-  const stopping = btn.dataset.active === 'yes';
-  stopSrc();
-  activeBtn = null;
-  document.querySelectorAll('.drone-btn').forEach(b => {
-    b.classList.remove('playing'); b.dataset.active = '';
-  });
-
-  if (stopping) { setUI(null, null); return; }
-
-  // Ensure AudioContext exists & is unlocked — synchronously
-  ensureAC();
-
-  // Build AudioBuffer from pre-computed Float32Array — synchronous, no decode step
-  const buf = AC.createBuffer(1, note.samples.length, SR);
-  buf.getChannelData(0).set(note.samples);
-
-  // AudioBufferSourceNode with loop=true is perfectly gapless — no HTML5 audio gap
-  const src = AC.createBufferSource();
-  src.buffer = buf;
-  src.loop   = true;
-  src.connect(masterGain);
-  src.start(0);
-  currentSrc = src;
-
-  activeBtn = btn;
-  btn.classList.add('playing');
-  btn.dataset.active = 'yes';
-  setUI(btn, note);
-}
-
-// ── UI update ─────────────────────────────────────────────────
 function setUI(btn, note) {
+  document.querySelectorAll('.drone-btn').forEach(b => { b.classList.remove('playing'); b.dataset.active = ''; });
   if (!btn) {
     elNote.textContent = '—'; elNote.classList.remove('active');
     elFreq.textContent = '—'; elLed.classList.remove('on');
     clearWave(); return;
   }
+  btn.classList.add('playing'); btn.dataset.active = 'yes';
   elNote.textContent = note.name + note.octave;
   elNote.classList.add('active');
   elFreq.textContent = note.freq.toFixed(2);
   elLed.classList.add('on');
-  animWave(note.freq);
+  animateWave(note.freq);
 }
 
-// ── Waveform animation ────────────────────────────────────────
+function handleClick(note, btn) {
+  const stopping = btn.dataset.active === 'yes';
+  stopAudio();
+  activeBtn = null;
+  if (stopping) { setUI(null, null); return; }
+
+  const audio = new Audio(note.url);
+  audio.loop   = true;
+  audio.volume = volLevel();
+  audio.play().catch(e => console.warn('play failed:', e));
+
+  currentAudio = audio;
+  activeBtn    = btn;
+  setUI(btn, note);
+}
+
 function clearWave() {
-  canvas.width = canvas.offsetWidth || 480;
+  canvas.width  = canvas.offsetWidth  || 480;
   canvas.height = canvas.offsetHeight || 40;
-  c.fillStyle = '#080705';
-  c.fillRect(0, 0, canvas.width, canvas.height);
+  ctx2d.fillStyle = '#080705';
+  ctx2d.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-function animWave(freq) {
+function animateWave(freq) {
   canvas.width  = canvas.offsetWidth  || 480;
   canvas.height = canvas.offsetHeight || 40;
   const W = canvas.width, H = canvas.height;
-  const speed = freq * 0.004;
-
+  const speed = freq / 200;
   function loop() {
     animFrame = requestAnimationFrame(loop);
     wavePhase += speed;
-    c.fillStyle = '#080705';
-    c.fillRect(0, 0, W, H);
-    c.beginPath();
-    c.strokeStyle = 'rgba(232,160,48,0.85)';
-    c.lineWidth = 1.5;
-    c.shadowColor = 'rgba(232,160,48,0.35)';
-    c.shadowBlur = 5;
+    ctx2d.fillStyle = '#080705';
+    ctx2d.fillRect(0, 0, W, H);
+    ctx2d.beginPath();
+    ctx2d.strokeStyle = 'rgba(232,160,48,0.8)';
+    ctx2d.lineWidth = 1.5;
+    ctx2d.shadowColor = 'rgba(232,160,48,0.4)';
+    ctx2d.shadowBlur = 6;
     for (let x = 0; x < W; x++) {
-      const t = (x / W) * Math.PI * 8 + wavePhase;
-      // Mimic a sawtooth visually using a few harmonics
-      const y = H/2 + (Math.sin(t)*0.6 + Math.sin(2*t)*0.25 + Math.sin(3*t)*0.15) * (H/2 - 4);
-      x === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
+      const t = x / W * Math.PI * 6 + wavePhase;
+      const y = H/2 + Math.sin(t) * (H/2 - 4);
+      x === 0 ? ctx2d.moveTo(x, y) : ctx2d.lineTo(x, y);
     }
-    c.stroke();
+    ctx2d.stroke();
   }
   loop();
 }
 
-// ── Build buttons ─────────────────────────────────────────────
 function makeBtn(note, container) {
   const btn = document.createElement('button');
   btn.className    = 'drone-btn';
@@ -591,10 +552,9 @@ function makeBtn(note, container) {
 BASS_NOTES.forEach(n   => makeBtn(n, document.getElementById('bassRow')));
 GUITAR_NOTES.forEach(n => makeBtn(n, document.getElementById('guitarRow')));
 
-// ── Volume ────────────────────────────────────────────────────
 slider.addEventListener('input', () => {
   elVol.textContent = slider.value;
-  if (masterGain) masterGain.gain.value = volLevel();
+  if (currentAudio) currentAudio.volume = volLevel();
 });
 
 clearWave();
