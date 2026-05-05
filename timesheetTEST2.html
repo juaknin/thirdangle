@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timesheet</title>
+
+  <!--
+  ════════════════════════════════════════════════════════════════
+  FIREBASE SETUP — one-time, takes about 15 minutes
+  ════════════════════════════════════════════════════════════════
+
+  PART 1 — Create the project
+  ─────────────────────────────────────────────────────────────
+  1. Go to https://console.firebase.google.com
+  2. Click "Get started by setting up a Firebase project"
+  3. Name it (e.g. "TimeTracking") → Continue
+  4. Disable Google Analytics → Create project
+
+  PART 2 — Create the Realtime Database
+  ─────────────────────────────────────────────────────────────
+  5. In the left sidebar, click "Databases & Storage"
+  6. Click "Realtime Database" → "Create Database"
+  7. Choose a region (us-central1 is fine) → Next
+  8. Select "Start in test mode" for now → Enable
+     (we will lock it down properly in Part 5)
+
+  PART 3 — Register the web app & get your config
+  ─────────────────────────────────────────────────────────────
+  9.  Click "Project Overview" (home icon) in the left sidebar
+  10. Click "+ Add app" → choose the </> (Web) icon
+  11. Give it any nickname (e.g. "timesheet-web") → Register app
+  12. You will see a firebaseConfig object — copy the values
+      into the firebaseConfig block in the script below
+
+  PART 4 — Enable Google Sign-in
+  ─────────────────────────────────────────────────────────────
+  13. In the left sidebar: Security → Authentication
+  14. Click "Get started" if prompted
+  15. Click "Sign-in method" tab → click "Google" → Enable → Save
+
+  PART 5 — Get your UID and lock down the database
+  ─────────────────────────────────────────────────────────────
+  16. Open this HTML file in your browser
+  17. Click "Sign in with Google" — sign in with your account
+  18. Go back to Firebase console → Security → Authentication → Users tab
+  19. Copy your UID (the long string of letters and numbers)
+  20. Paste it into the ALLOWED_UID line in the script below
+  21. Go to Databases & Storage → Realtime Database → Rules tab
+  22. Replace everything with the block below, using your UID, then click Publish:
+
+      {
+        "rules": {
+          ".read": "auth != null && auth.uid === 'PASTE_YOUR_UID_HERE'",
+          ".write": "auth != null && auth.uid === 'PASTE_YOUR_UID_HERE'"
+        }
+      }
+
+  Done — only your Google account can read or write your data.
+  ════════════════════════════════════════════════════════════════
+  -->
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Bebas+Neue&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg:        #0f0f0e;
+      --bg2:       #181816;
+      --bg3:       #222220;
+      --border:    #2e2e2b;
+      --amber:     #f59e0b;
+      --amber-dim: #b37308;
+      --text:      #e4e2dc;
+      --muted:     #6b6b65;
+      --red:       #ef4444;
+      --green:     #4ade80;
+      --r:         3px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      min-height: 100vh;
+    }
+
+    /* ── Sign-in screen ─────────────────────────────── */
+    #signin-screen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 32px;
+    }
+
+    .signin-logo { font-family: 'Bebas Neue', sans-serif; font-size: 3rem; letter-spacing: .1em; color: var(--amber); }
+    .signin-sub  { font-size: .65rem; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-top: -24px; }
+
+    .btn-google {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: .72rem;
+      letter-spacing: .06em;
+      padding: 12px 24px;
+      border-radius: var(--r);
+      cursor: pointer;
+      transition: border-color .2s;
+    }
+    .btn-google:hover { border-color: var(--amber); }
+    .google-icon { width: 18px; height: 18px; flex-shrink: 0; }
+
+    .signin-note {
+      font-size: .58rem;
+      color: var(--muted);
+      letter-spacing: .05em;
+      text-align: center;
+      max-width: 280px;
+      line-height: 1.7;
+    }
+
+    /* ── Main app ───────────────────────────────────── */
+    #app {
+      display: none;
+      padding: 24px 20px 48px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ─────────────────────────────────────── */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+    }
+
+    .logo { font-family: 'Bebas Neue', sans-serif; font-size: 2rem; letter-spacing: .1em; color: var(--amber); }
+
+    .header-right { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    #current-date { font-size: .65rem; color: var(--muted); letter-spacing: .06em; }
+    #fb-status    { font-size: .58rem; letter-spacing: .06em; color: var(--muted); }
+    #fb-status.ok  { color: var(--green); }
+    #fb-status.err { color: var(--red); }
+
+    .user-row { display: flex; align-items: center; gap: 8px; }
+    .user-name { font-size: .58rem; color: var(--muted); }
+    .btn-signout {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: .55rem;
+      letter-spacing: .08em;
+      padding: 2px 8px;
+      border-radius: var(--r);
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .btn-signout:hover { border-color: var(--red); color: var(--red); }
+
+    /* ── Project grid ───────────────────────────────── */
+    .projects {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 32px;
+    }
+    @media (max-width: 480px) { .projects { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 16px 16px 14px;
+      transition: border-color .2s;
+    }
+    .card.running { border-color: var(--amber); }
+
+    .card-name {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 12px;
+      cursor: pointer;
+    }
+
+    .dot {
+      flex-shrink: 0;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--border);
+      transition: background .2s, box-shadow .2s;
+    }
+    .card.running .dot {
+      background: var(--amber);
+      box-shadow: 0 0 7px var(--amber);
+      animation: blink 1.6s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    .name-text {
+      font-size: .65rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .card-name:hover .name-text { color: var(--text); }
+    .edit-hint { font-size: .55rem; color: var(--border); }
+    .card-name:hover .edit-hint { color: var(--muted); }
+
+    .name-input {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--amber);
+      color: var(--text);
+      font-family: inherit;
+      font-size: .65rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      width: 100%;
+      outline: none;
+      padding-bottom: 1px;
+    }
+
+    .card-timer {
+      font-size: 2.6rem;
+      font-weight: 600;
+      letter-spacing: .03em;
+      line-height: 1;
+      margin-bottom: 14px;
+      transition: color .2s;
+    }
+    .card.running .card-timer { color: var(--amber); }
+
+    .card-footer { display: flex; justify-content: space-between; align-items: center; }
+    .today-label { font-size: .6rem; color: var(--muted); }
+
+    .btn-toggle {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: inherit;
+      font-size: .6rem;
+      letter-spacing: .1em;
+      padding: 5px 13px;
+      border-radius: var(--r);
+      cursor: pointer;
+      transition: all .15s;
+      user-select: none;
+    }
+    .btn-toggle:hover { border-color: var(--muted); color: var(--text); }
+    .card.running .btn-toggle {
+      border-color: var(--amber);
+      color: var(--amber);
+      background: rgba(245,158,11,.07);
+    }
+
+    /* ── Section label ──────────────────────────────── */
+    .section-label {
+      font-size: .58rem;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Sessions table ─────────────────────────────── */
+    .sessions-wrap { margin-bottom: 28px; }
+
+    .tbl { width: 100%; border-collapse: collapse; font-size: .68rem; }
+    .tbl th {
+      text-align: left;
+      font-weight: 400;
+      font-size: .55rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      padding: 5px 8px;
+    }
+    .tbl td { padding: 7px 8px; border-bottom: 1px solid var(--bg3); }
+    .tbl tr:hover td { background: var(--bg2); }
+    .tbl .del {
+      background: none; border: none;
+      color: var(--border); cursor: pointer;
+      font-size: .7rem; padding: 1px 4px;
+      transition: color .15s;
+    }
+    .tbl .del:hover { color: var(--red); }
+    .empty-msg { text-align: center; color: var(--muted); font-size: .65rem; padding: 28px; }
+
+    /* ── Export panel ───────────────────────────────── */
+    .export-panel {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 18px;
+    }
+    .export-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .sel-month {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: .68rem;
+      padding: 6px 10px;
+      border-radius: var(--r);
+      outline: none; cursor: pointer;
+    }
+    .btn-export {
+      background: var(--amber);
+      border: none;
+      color: #111;
+      font-family: inherit;
+      font-size: .6rem;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      padding: 7px 18px;
+      border-radius: var(--r);
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-export:hover { background: var(--amber-dim); }
+    .export-totals { font-size: .63rem; color: var(--muted); line-height: 1.8; }
+    .export-totals span { color: var(--text); }
+  </style>
+</head>
+<body>
+
+<!-- Sign-in screen -->
+<div id="signin-screen">
+  <div>
+    <div class="signin-logo">TIMESHEET</div>
+    <div class="signin-sub">Third Angle LLC</div>
+  </div>
+  <button class="btn-google" onclick="signIn()">
+    <svg class="google-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+      <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+      <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+      <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+    </svg>
+    Sign in with Google
+  </button>
+  <div class="signin-note">
+    Only your Google account can access this app.<br>
+    No data is shared with anyone else.
+  </div>
+</div>
+
+<!-- Main app (hidden until signed in) -->
+<div id="app">
+  <header>
+    <div class="logo">TIMESHEET</div>
+    <div class="header-right">
+      <div id="current-date"></div>
+      <div id="fb-status">connecting…</div>
+      <div class="user-row">
+        <div class="user-name" id="user-name"></div>
+        <button class="btn-signout" onclick="signOut()">sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="projects" id="projects-grid"></div>
+
+  <div class="sessions-wrap">
+    <div class="section-label">Recent sessions</div>
+    <table class="tbl">
+      <thead>
+        <tr><th>Date</th><th>Project</th><th>Start</th><th>End</th><th>Duration</th><th></th></tr>
+      </thead>
+      <tbody id="sessions-body">
+        <tr><td colspan="6" class="empty-msg">No sessions yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="export-panel">
+    <div class="section-label">Export</div>
+    <div class="export-row">
+      <select class="sel-month" id="month-sel"></select>
+      <button class="btn-export" onclick="exportCSV()">↓ Export CSV</button>
+    </div>
+    <div class="export-totals" id="export-totals">—</div>
+  </div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════
+// STEP 1 — Paste your Firebase config here (from Part 3 of setup)
+// ════════════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyDIKCIMH4qnW3NuqwFmz8bAgJ5HdL1GyEc",
+  authDomain: "timetracking-6aafb.firebaseapp.com",
+  databaseURL: "https://timetracking-6aafb-default-rtdb.firebaseio.com",
+  projectId: "timetracking-6aafb",
+  storageBucket: "timetracking-6aafb.firebasestorage.app",
+  messagingSenderId: "181425664766",
+  appId: "1:181425664766:web:e85a24badfbbd259ddabaf"
+};
+// ════════════════════════════════════════════════════════════════
+// STEP 2 — After your first sign-in, paste your UID here
+//           (Firebase console → Security → Authentication → Users)
+//           Leave as "" on first run, sign in, grab your UID, then fill this in.
+// ════════════════════════════════════════════════════════════════
+const ALLOWED_UID = "";
+// ════════════════════════════════════════════════════════════════
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db   = firebase.database();
+
+// ── Auth ──────────────────────────────────────────────────────
+function signIn() {
+  auth.signInWithPopup(new firebase.auth.GoogleAuthProvider())
+    .catch(err => alert('Sign-in failed: ' + err.message));
+}
+
+function signOut() { auth.signOut(); }
+
+auth.onAuthStateChanged(user => {
+  if (!user) {
+    document.getElementById('signin-screen').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+    teardown();
+    return;
+  }
+  if (ALLOWED_UID && user.uid !== ALLOWED_UID) {
+    auth.signOut();
+    alert('Access restricted to the owner of this app.');
+    return;
+  }
+  document.getElementById('signin-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  document.getElementById('user-name').textContent = user.email;
+  setup();
+});
+
+// ── Local state ───────────────────────────────────────────────
+const DEFAULT_PROJECTS = {
+  "0": { name: "Project 1" }, "1": { name: "Project 2" },
+  "2": { name: "Project 3" }, "3": { name: "Project 4" }
+};
+
+let projects = { ...DEFAULT_PROJECTS };
+let active   = {};
+let sessions = {};
+let tickTimer = null;
+let listeners = [];
+
+// ── Helpers ───────────────────────────────────────────────────
+const pad = n => String(n).padStart(2, '0');
+function msToHMS(ms) { const s=Math.floor(ms/1000); return `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`; }
+function secToHMS(s) { return `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`; }
+function secToH(s)   { return (s/3600).toFixed(2) + ' h'; }
+function fmtDate(ts) { return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+function fmtHM(ts)   { return new Date(ts).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}); }
+function monthKey(ts){ const d=new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth()+1)}`; }
+function monthLabel(k){ const [y,m]=k.split('-'); return new Date(y,m-1,1).toLocaleDateString('en-US',{month:'long',year:'numeric'}); }
+function escHtml(s)  { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function updateDate() {
+  const el = document.getElementById('current-date');
+  if (el) el.textContent = new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+}
+
+function todayTotal(pid) {
+  const midnight = new Date(); midnight.setHours(0,0,0,0);
+  let t = 0;
+  Object.values(sessions).forEach(s => {
+    if (String(s.projectId)===String(pid) && s.start>=midnight.getTime()) t += s.duration||0;
+  });
+  if (active[pid] && active[pid]>=midnight.getTime())
+    t += Math.floor((Date.now()-active[pid])/1000);
+  return t;
+}
+
+// ── Render projects ───────────────────────────────────────────
+function renderProjects() {
+  const grid = document.getElementById('projects-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  ['0','1','2','3'].forEach(pid => {
+    const proj = projects[pid] || { name: `Project ${+pid+1}` };
+    const running = !!active[pid];
+    const card = document.createElement('div');
+    card.className = `card${running?' running':''}`;
+    card.id = `card-${pid}`;
+    card.innerHTML = `
+      <div class="card-name" onclick="editName('${pid}')">
+        <div class="dot"></div>
+        <div class="name-text">${escHtml(proj.name)}</div>
+        <div class="edit-hint">✎</div>
+      </div>
+      <div class="card-timer" id="timer-${pid}">00:00:00</div>
+      <div class="card-footer">
+        <div class="today-label" id="today-${pid}">Today: ${secToH(todayTotal(pid))}</div>
+        <button class="btn-toggle" onclick="toggle('${pid}')">${running?'■ STOP':'▶ START'}</button>
+      </div>`;
+    grid.appendChild(card);
+  });
+  updateTimers();
+}
+
+function editName(pid) {
+  const nameDiv = document.querySelector(`#card-${pid} .card-name`);
+  if (!nameDiv) return;
+  const current = projects[pid]?.name || '';
+  nameDiv.innerHTML = `<input class="name-input" type="text" value="${escHtml(current)}" maxlength="30">`;
+  const inp = nameDiv.querySelector('input');
+  inp.focus(); inp.select();
+  const save = () => db.ref(`projects/${pid}/name`).set(inp.value.trim()||`Project ${+pid+1}`);
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', e => { if(e.key==='Enter') inp.blur(); if(e.key==='Escape') renderProjects(); });
+}
+
+function toggle(pid) {
+  if (active[pid]) {
+    const start=active[pid], end=Date.now(), dur=Math.floor((end-start)/1000);
+    if (dur<5) { db.ref(`active/${pid}`).remove(); return; }
+    db.ref('sessions').push({ projectId:pid, start, end, duration:dur });
+    db.ref(`active/${pid}`).remove();
+  } else {
+    db.ref(`active/${pid}`).set(Date.now());
+  }
+}
+
+function startTick() {
+  if (tickTimer) clearInterval(tickTimer);
+  tickTimer = setInterval(updateTimers, 1000);
+}
+
+function updateTimers() {
+  ['0','1','2','3'].forEach(pid => {
+    const el=document.getElementById(`timer-${pid}`);
+    const td=document.getElementById(`today-${pid}`);
+    if (el) el.textContent = active[pid] ? msToHMS(Date.now()-active[pid]) : '00:00:00';
+    if (td) td.textContent = `Today: ${secToH(todayTotal(pid))}`;
+  });
+}
+
+// ── Sessions ──────────────────────────────────────────────────
+function renderSessions() {
+  const tbody = document.getElementById('sessions-body');
+  if (!tbody) return;
+  const keys = Object.keys(sessions).sort((a,b)=>sessions[b].start-sessions[a].start);
+  if (!keys.length) { tbody.innerHTML='<tr><td colspan="6" class="empty-msg">No sessions yet</td></tr>'; return; }
+  tbody.innerHTML = keys.slice(0,60).map(k => {
+    const s=sessions[k], name=projects[s.projectId]?.name||`Project ${+s.projectId+1}`;
+    return `<tr>
+      <td>${fmtDate(s.start)}</td><td>${escHtml(name)}</td>
+      <td>${fmtHM(s.start)}</td><td>${fmtHM(s.end)}</td>
+      <td>${secToHMS(s.duration)}</td>
+      <td><button class="del" onclick="delSession('${k}')">✕</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function delSession(k) {
+  if (confirm('Delete this session?')) db.ref(`sessions/${k}`).remove();
+}
+
+// ── Export ────────────────────────────────────────────────────
+function populateMonths() {
+  const sel = document.getElementById('month-sel');
+  if (!sel) return;
+  const cur = sel.value;
+  const months = new Set([monthKey(Date.now())]);
+  Object.values(sessions).forEach(s => months.add(monthKey(s.start)));
+  const sorted = [...months].sort().reverse();
+  sel.innerHTML = sorted.map(m=>`<option value="${m}">${monthLabel(m)}</option>`).join('');
+  if (cur && months.has(cur)) sel.value = cur;
+  updateExportTotals();
+}
+
+function updateExportTotals() {
+  const m = document.getElementById('month-sel')?.value; if (!m) return;
+  const [y,mo]=m.split('-');
+  const t0=new Date(+y,+mo-1,1).getTime(), t1=new Date(+y,+mo,1).getTime();
+  const totals={};
+  Object.values(sessions).forEach(s => {
+    if (s.start>=t0&&s.start<t1) totals[s.projectId]=(totals[s.projectId]||0)+(s.duration||0);
+  });
+  const lines=Object.entries(totals).map(([pid,sec])=>
+    `${escHtml(projects[pid]?.name||`Project ${+pid+1}`)}: <span>${secToH(sec)}</span>`);
+  lines.push(`Total: <span>${secToH(Object.values(totals).reduce((a,b)=>a+b,0))}</span>`);
+  document.getElementById('export-totals').innerHTML = lines.join('<br>')||'—';
+}
+
+function exportCSV() {
+  const m=document.getElementById('month-sel').value;
+  const [y,mo]=m.split('-');
+  const t0=new Date(+y,+mo-1,1).getTime(), t1=new Date(+y,+mo,1).getTime();
+  const rows=[['Date','Project','Start','End','Duration (hh:mm:ss)','Hours']];
+  const totals={};
+  Object.keys(sessions).sort((a,b)=>sessions[a].start-sessions[b].start).forEach(k=>{
+    const s=sessions[k];
+    if (s.start>=t0&&s.start<t1) {
+      const name=projects[s.projectId]?.name||`Project ${+s.projectId+1}`;
+      rows.push([fmtDate(s.start),name,fmtHM(s.start),fmtHM(s.end),secToHMS(s.duration),(s.duration/3600).toFixed(4)]);
+      totals[name]=(totals[name]||0)+s.duration;
+    }
+  });
+  rows.push([],['SUMMARY','','','','','']);
+  Object.entries(totals).forEach(([n,s])=>rows.push(['',n,'','','',(s/3600).toFixed(4)]));
+  rows.push(['','TOTAL','','','', (Object.values(totals).reduce((a,b)=>a+b,0)/3600).toFixed(4)]);
+  const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a=Object.assign(document.createElement('a'),{href:URL.createObjectURL(new Blob([csv],{type:'text/csv'})),download:`timesheet-${m}.csv`});
+  a.click();
+}
+
+// ── Firebase setup / teardown ─────────────────────────────────
+function setup() {
+  updateDate();
+  if (!window._dateInterval) window._dateInterval = setInterval(updateDate, 60000);
+
+  db.ref('.info/connected').on('value', snap => {
+    const el=document.getElementById('fb-status'); if (!el) return;
+    el.textContent = snap.val()?'● connected':'○ offline';
+    el.className   = snap.val()?'ok':'err';
+  });
+
+  db.ref('projects').once('value', snap => { if (!snap.val()) db.ref('projects').set(DEFAULT_PROJECTS); });
+
+  const r1=db.ref('projects');
+  r1.on('value', snap => { projects=snap.val()||DEFAULT_PROJECTS; renderProjects(); renderSessions(); updateExportTotals(); });
+  listeners.push(r1);
+
+  const r2=db.ref('active');
+  r2.on('value', snap => { active=snap.val()||{}; renderProjects(); });
+  listeners.push(r2);
+
+  const r3=db.ref('sessions');
+  r3.on('value', snap => { sessions=snap.val()||{}; renderSessions(); populateMonths(); });
+  listeners.push(r3);
+
+  document.getElementById('month-sel').addEventListener('change', updateExportTotals);
+  startTick();
+}
+
+function teardown() {
+  listeners.forEach(r=>r.off()); listeners=[];
+  if (tickTimer) { clearInterval(tickTimer); tickTimer=null; }
+  active={}; sessions={}; projects={...DEFAULT_PROJECTS};
+}
+</script>
+</body>
+</html>
