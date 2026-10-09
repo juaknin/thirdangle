@@ -288,7 +288,9 @@ document.querySelectorAll('.guitar-mode-btn').forEach(btn=>{
 
 buildBassRow('4std');
 buildGuitarRow('6std');
-slider.addEventListener('input',()=>{ elVol.textContent=slider.value; if(currentAudio)currentAudio.volume=slider.value/100; });
+function updateVolume(){ elVol.textContent=slider.value; if(currentAudio)currentAudio.volume=slider.value/100; }
+slider.addEventListener('input', updateVolume);
+slider.addEventListener('change', updateVolume);
 clearDroneWave();
 
 
