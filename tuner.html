@@ -92,6 +92,7 @@
   input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:radial-gradient(circle at 35% 30%,#d09028,#7a5010); border:1px solid var(--amber-dim); box-shadow:0 0 6px rgba(232,160,48,0.3),0 2px 4px rgba(0,0,0,0.5); cursor:pointer; }
   input[type="range"]::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:radial-gradient(circle at 35% 30%,#d09028,#7a5010); border:1px solid var(--amber-dim); cursor:pointer; }
 
+  .version { text-align:center; font-size:9px; letter-spacing:.25em; color:var(--text-dim); opacity:.6; margin-top:22px; }
   .divider { height:1px; background:linear-gradient(90deg,transparent,var(--border),transparent); margin:20px 0; }
 
   /* ── BASS MODE TOGGLE ── */
@@ -156,9 +157,10 @@
   <div class="section-label">VOLUME</div>
   <div class="volume-section">
     <div class="vol-label">LEVEL</div>
-    <input type="range" id="volumeSlider" min="0" max="100" value="70">
-    <div class="vol-value" id="volDisplay">77</div>
+    <input type="range" id="volumeSlider" min="1" max="8" step="1" value="6">
+    <div class="vol-value" id="volDisplay">6</div>
   </div>
+  <div class="version">V1.2</div>
 
 
 </div>
@@ -167,16 +169,27 @@
 // ═══════════════════════════════════════
 //  DRONE ENGINE
 // ═══════════════════════════════════════
+const SR = 22050;      // low rate: half the memory and CPU, plenty for notes under 330 Hz
+const LOOP_SECONDS = 20;
 function makeWavURL(freq, amp) {
-  const SR=44100, numSamples=Math.round(SR/freq)*Math.round(20*freq);
-  const buf=new ArrayBuffer(44+numSamples*2), d=new DataView(buf);
-  const ws=(o,v)=>{for(let i=0;i<v.length;i++)d.setUint8(o+i,v.charCodeAt(i));};
-  ws(0,'RIFF'); d.setUint32(4,36+numSamples*2,true); ws(8,'WAVE'); ws(12,'fmt ');
+  // Whole number of cycles per file, so the loop seam lands exactly on a cycle boundary.
+  const cycles = Math.round(LOOP_SECONDS * freq);
+  const n = Math.round(cycles * SR / freq);
+  const buf = new ArrayBuffer(44 + n * 2), d = new DataView(buf);
+  const ws = (o, v) => { for (let i = 0; i < v.length; i++) d.setUint8(o + i, v.charCodeAt(i)); };
+  ws(0,'RIFF'); d.setUint32(4, 36 + n * 2, true); ws(8,'WAVE'); ws(12,'fmt ');
   d.setUint32(16,16,true); d.setUint16(20,1,true); d.setUint16(22,1,true);
   d.setUint32(24,SR,true); d.setUint32(28,SR*2,true); d.setUint16(32,2,true); d.setUint16(34,16,true);
-  ws(36,'data'); d.setUint32(40,numSamples*2,true);
-  for(let i=0;i<numSamples;i++) d.setInt16(44+i*2,Math.round(((i*freq/SR)%1.0*2-1)*amp*32767),true);
-  return URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+  ws(36,'data'); d.setUint32(40, n * 2, true);
+  // Sawtooth via running phase accumulator into a typed array (no per-sample DataView/round/modulo).
+  const out = new Int16Array(buf, 44, n);
+  const inc = cycles / n, scale = 2 * amp * 32767, off = amp * 32767;
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    out[i] = ph * scale - off;      // truncates toward zero on store
+    ph += inc; if (ph >= 1) ph -= 1;
+  }
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 
 const BASS_MODES = {
@@ -190,23 +203,38 @@ const GUITAR_MODES = {
   '7std': [{name:'B',octave:'1',freq:61.74},{name:'E',octave:'2',freq:82.41},{name:'A',octave:'2',freq:110.00},{name:'D',octave:'3',freq:146.83},{name:'G',octave:'3',freq:196.00},{name:'B',octave:'3',freq:246.94},{name:'E',octave:'4',freq:329.63}],
 };
 
-// WAV cache — generated on first click, not at load time
-// iOS ignores HTMLMediaElement.volume, so volume is baked into the WAV amplitude instead.
-// Cache holds files for the current slider level only; it is flushed when the level changes.
-const wavCache = new Map();
-function volToAmp(v){ const x=v/100; return 0.5*x*x; }   // quadratic taper, 70 ~ old loudness
-function getWavURL(freq){
-  if(!wavCache.has(freq)) wavCache.set(freq, makeWavURL(freq, volToAmp(+slider.value)));
-  return wavCache.get(freq);
+// Volume: iOS ignores HTMLMediaElement.volume, so each level is its own WAV with baked-in amplitude.
+// 8 steps of 3 dB. Only the current level and its two neighbors are kept in memory.
+const LEVELS = 8, TOP_AMP = 0.5;
+const levelAmp = L => TOP_AMP * Math.pow(10, -3 * (LEVELS - L) / 20);
+let wavCache = new Map();     // "freq:level" -> blob URL, current note only
+let cacheFreq = null;
+const keyOf = (freq, L) => freq + ':' + L;
+function getWavURL(freq, L){
+  const k = keyOf(freq, L);
+  if(!wavCache.has(k)) wavCache.set(k, makeWavURL(freq, levelAmp(L)));
+  return wavCache.get(k);
+}
+function revokeLater(urls){ if(urls.length) setTimeout(()=>urls.forEach(u=>URL.revokeObjectURL(u)), 1500); }
+function freeAllWavs(){ revokeLater([...wavCache.values()]); wavCache = new Map(); cacheFreq = null; }
+// Keep only L-1..L+1 for freq; build any missing neighbor in the background.
+function trimAndPrefetch(freq, L){
+  const keep = new Set([L-1, L, L+1].filter(x => x >= 1 && x <= LEVELS).map(x => keyOf(freq, x)));
+  const drop = [];
+  for(const [k,u] of wavCache){ if(!keep.has(k)){ drop.push(u); wavCache.delete(k); } }
+  revokeLater(drop);
+  [L-1, L+1].filter(x => x >= 1 && x <= LEVELS).forEach((x,i) => setTimeout(() => {
+    if(currentNote && currentNote.freq === freq && Math.abs(x - curLevel) <= 1) getWavURL(freq, x);
+  }, 30 + i * 30));
 }
 
-let currentAudio=null, currentNote=null, activeDroneBtn=null, droneRaf=null, wavePhase=0;
+let curLevel=6, currentAudio=null, currentNote=null, activeDroneBtn=null, droneRaf=null, wavePhase=0;
 const elDNote=document.getElementById('displayNote'), elDFreq=document.getElementById('displayFreq');
 const elLed=document.getElementById('led'), slider=document.getElementById('volumeSlider'), elVol=document.getElementById('volDisplay');
 const wCvs=document.getElementById('waveCanvas'), wCtx=wCvs.getContext('2d');
 const bassRow=document.getElementById('bassRow');
 
-function stopDrone(){ if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null;} currentNote=null; if(droneRaf){cancelAnimationFrame(droneRaf);droneRaf=null;} }
+function stopDrone(){ if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null;} currentNote=null; freeAllWavs(); if(droneRaf){cancelAnimationFrame(droneRaf);droneRaf=null;} }
 
 function droneUI(btn,note){
   document.querySelectorAll('.drone-btn').forEach(b=>{b.classList.remove('playing');b.dataset.active='';});
@@ -220,10 +248,11 @@ function droneUI(btn,note){
 function handleDrone(note,btn){
   const stop=btn.dataset.active==='yes'; stopDrone(); activeDroneBtn=null;
   if(stop){droneUI(null,null);return;}
-  const url=getWavURL(note.freq);  // generate lazily on first click
+  const url=getWavURL(note.freq, curLevel);  // current level only, built now
   const a=new Audio(url); a.loop=true;
   a.play().catch(e=>console.warn(e));
-  currentAudio=a; currentNote=note; activeDroneBtn=btn; droneUI(btn,note);
+  currentAudio=a; currentNote=note; cacheFreq=note.freq; activeDroneBtn=btn; droneUI(btn,note);
+  trimAndPrefetch(note.freq, curLevel);   // neighbors built right after playback has started
 }
 
 function clearDroneWave(){ wCvs.width=wCvs.offsetWidth||480; wCvs.height=wCvs.offsetHeight||40; wCtx.fillStyle='#080705'; wCtx.fillRect(0,0,wCvs.width,wCvs.height); }
@@ -291,28 +320,28 @@ document.querySelectorAll('.guitar-mode-btn').forEach(btn=>{
 
 buildBassRow('4std');
 buildGuitarRow('6std');
-let volTimer=null;
-function applyVolume(){
-  volTimer=null;
-  const old=[...wavCache.values()];
-  wavCache.clear();                       // levels changed: old files are stale
-  if(currentAudio && currentNote){
-    const a=currentAudio, t=a.currentTime, wasPlaying=!a.paused;
-    a.src=getWavURL(currentNote.freq);
-    a.loop=true;
-    // identical file lengths, so resuming at the same time keeps the waveform phase (no click)
-    a.addEventListener('loadedmetadata',()=>{ try{a.currentTime=t;}catch(e){} if(wasPlaying)a.play().catch(()=>{}); },{once:true});
-    a.load();
-  }
-  setTimeout(()=>old.forEach(u=>URL.revokeObjectURL(u)),1500);
+function swapLevel(a, url){
+  // Keep the playhead across the swap (same file length at every level, so phase carries over).
+  if(a.readyState >= 1) a._resumeT = a.currentTime;
+  a.src = url; a.loop = true;
+  a.onloadedmetadata = () => {            // single handler, replaced each swap, so rapid steps don't stack
+    try{ a.currentTime = a._resumeT || 0; }catch(e){}
+    a.play().catch(()=>{});
+  };
+  a.load();
 }
 function updateVolume(){
-  elVol.textContent=slider.value;
-  clearTimeout(volTimer);
-  volTimer=setTimeout(applyVolume,120);   // debounce while dragging
+  const L = Math.min(LEVELS, Math.max(1, Math.round(+slider.value)));
+  elVol.textContent = L;
+  if(L === curLevel) return;
+  curLevel = L;
+  if(currentAudio && currentNote){
+    swapLevel(currentAudio, getWavURL(currentNote.freq, L));   // cached neighbor = instant, else built now
+    trimAndPrefetch(currentNote.freq, L);
+  }
 }
 slider.addEventListener('input', updateVolume);
-slider.addEventListener('change', updateVolume);
+slider.addEventListener('change', updateVolume);slider.addEventListener('change', updateVolume);
 clearDroneWave();
 
 
