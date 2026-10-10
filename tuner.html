@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
+<!-- saved from url=(0031)https://www.thirdangle.io/tuner -->
+<html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Drone Tuner</title>
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link href="./Drone Tuner_files/css2" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -134,15 +134,15 @@
     </div>
   </div>
 
-  <div class="wave-container"><canvas id="waveCanvas"></canvas></div>
+  <div class="wave-container"><canvas id="waveCanvas" width="507" height="38"></canvas></div>
 
   <div class="section-label">BASS GUITAR</div>
   <div class="mode-toggle">
-    <button class="mode-btn active" data-mode="4std">4-STRING</button>
+    <button class="mode-btn" data-mode="4std">4-STRING</button>
     <button class="mode-btn" data-mode="drop">DROP D</button>
-    <button class="mode-btn" data-mode="5std">5-STRING</button>
+    <button class="mode-btn active" data-mode="5std">5-STRING</button>
   </div>
-  <div class="button-row" id="bassRow"></div>
+  <div class="button-row" id="bassRow" style="grid-template-columns: repeat(5, 1fr);"><button class="drone-btn" data-note="B" data-oct="0" data-active=""><div class="btn-note">B</div><div class="btn-freq">30.9</div></button><button class="drone-btn" data-note="E" data-oct="1" data-active=""><div class="btn-note">E</div><div class="btn-freq">41.2</div></button><button class="drone-btn" data-note="A" data-oct="1" data-active=""><div class="btn-note">A</div><div class="btn-freq">55.0</div></button><button class="drone-btn" data-note="D" data-oct="2" data-active=""><div class="btn-note">D</div><div class="btn-freq">73.4</div></button><button class="drone-btn" data-note="G" data-oct="2" data-active=""><div class="btn-note">G</div><div class="btn-freq">98.0</div></button></div>
   <div class="divider"></div>
   <div class="section-label">GUITAR</div>
   <div class="mode-toggle">
@@ -150,14 +150,14 @@
     <button class="guitar-mode-btn" data-gmode="drop">DROP D</button>
     <button class="guitar-mode-btn" data-gmode="7std">7-STRING</button>
   </div>
-  <div class="button-row guitar-row" id="guitarRow"></div>
+  <div class="button-row guitar-row" id="guitarRow" style="grid-template-columns: repeat(6, 1fr);"><button class="drone-btn" data-note="E" data-oct="2" data-active=""><div class="btn-note">E</div><div class="btn-freq">82.4</div></button><button class="drone-btn" data-note="A" data-oct="2" data-active=""><div class="btn-note">A</div><div class="btn-freq">110.0</div></button><button class="drone-btn" data-note="D" data-oct="3" data-active=""><div class="btn-note">D</div><div class="btn-freq">146.8</div></button><button class="drone-btn" data-note="G" data-oct="3" data-active=""><div class="btn-note">G</div><div class="btn-freq">196.0</div></button><button class="drone-btn" data-note="B" data-oct="3" data-active=""><div class="btn-note">B</div><div class="btn-freq">246.9</div></button><button class="drone-btn" data-note="E" data-oct="4" data-active=""><div class="btn-note">E</div><div class="btn-freq">329.6</div></button></div>
   <div class="divider"></div>
 
   <div class="section-label">VOLUME</div>
   <div class="volume-section">
     <div class="vol-label">LEVEL</div>
     <input type="range" id="volumeSlider" min="0" max="100" value="70">
-    <div class="vol-value" id="volDisplay">70</div>
+    <div class="vol-value" id="volDisplay">77</div>
   </div>
 
 
@@ -167,8 +167,8 @@
 // ═══════════════════════════════════════
 //  DRONE ENGINE
 // ═══════════════════════════════════════
-function makeWavURL(freq) {
-  const SR=44100, numSamples=Math.round(SR/freq)*Math.round(20*freq), amp=0.35;
+function makeWavURL(freq, amp) {
+  const SR=44100, numSamples=Math.round(SR/freq)*Math.round(20*freq);
   const buf=new ArrayBuffer(44+numSamples*2), d=new DataView(buf);
   const ws=(o,v)=>{for(let i=0;i<v.length;i++)d.setUint8(o+i,v.charCodeAt(i));};
   ws(0,'RIFF'); d.setUint32(4,36+numSamples*2,true); ws(8,'WAVE'); ws(12,'fmt ');
@@ -191,19 +191,22 @@ const GUITAR_MODES = {
 };
 
 // WAV cache — generated on first click, not at load time
+// iOS ignores HTMLMediaElement.volume, so volume is baked into the WAV amplitude instead.
+// Cache holds files for the current slider level only; it is flushed when the level changes.
 const wavCache = new Map();
+function volToAmp(v){ const x=v/100; return 0.5*x*x; }   // quadratic taper, 70 ~ old loudness
 function getWavURL(freq){
-  if(!wavCache.has(freq)) wavCache.set(freq, makeWavURL(freq));
+  if(!wavCache.has(freq)) wavCache.set(freq, makeWavURL(freq, volToAmp(+slider.value)));
   return wavCache.get(freq);
 }
 
-let currentAudio=null, activeDroneBtn=null, droneRaf=null, wavePhase=0;
+let currentAudio=null, currentNote=null, activeDroneBtn=null, droneRaf=null, wavePhase=0;
 const elDNote=document.getElementById('displayNote'), elDFreq=document.getElementById('displayFreq');
 const elLed=document.getElementById('led'), slider=document.getElementById('volumeSlider'), elVol=document.getElementById('volDisplay');
 const wCvs=document.getElementById('waveCanvas'), wCtx=wCvs.getContext('2d');
 const bassRow=document.getElementById('bassRow');
 
-function stopDrone(){ if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null;} if(droneRaf){cancelAnimationFrame(droneRaf);droneRaf=null;} }
+function stopDrone(){ if(currentAudio){currentAudio.pause();currentAudio.currentTime=0;currentAudio=null;} currentNote=null; if(droneRaf){cancelAnimationFrame(droneRaf);droneRaf=null;} }
 
 function droneUI(btn,note){
   document.querySelectorAll('.drone-btn').forEach(b=>{b.classList.remove('playing');b.dataset.active='';});
@@ -218,9 +221,9 @@ function handleDrone(note,btn){
   const stop=btn.dataset.active==='yes'; stopDrone(); activeDroneBtn=null;
   if(stop){droneUI(null,null);return;}
   const url=getWavURL(note.freq);  // generate lazily on first click
-  const a=new Audio(url); a.loop=true; a.volume=slider.value/100;
+  const a=new Audio(url); a.loop=true;
   a.play().catch(e=>console.warn(e));
-  currentAudio=a; activeDroneBtn=btn; droneUI(btn,note);
+  currentAudio=a; currentNote=note; activeDroneBtn=btn; droneUI(btn,note);
 }
 
 function clearDroneWave(){ wCvs.width=wCvs.offsetWidth||480; wCvs.height=wCvs.offsetHeight||40; wCtx.fillStyle='#080705'; wCtx.fillRect(0,0,wCvs.width,wCvs.height); }
@@ -288,7 +291,26 @@ document.querySelectorAll('.guitar-mode-btn').forEach(btn=>{
 
 buildBassRow('4std');
 buildGuitarRow('6std');
-function updateVolume(){ elVol.textContent=slider.value; if(currentAudio)currentAudio.volume=slider.value/100; }
+let volTimer=null;
+function applyVolume(){
+  volTimer=null;
+  const old=[...wavCache.values()];
+  wavCache.clear();                       // levels changed: old files are stale
+  if(currentAudio && currentNote){
+    const a=currentAudio, t=a.currentTime, wasPlaying=!a.paused;
+    a.src=getWavURL(currentNote.freq);
+    a.loop=true;
+    // identical file lengths, so resuming at the same time keeps the waveform phase (no click)
+    a.addEventListener('loadedmetadata',()=>{ try{a.currentTime=t;}catch(e){} if(wasPlaying)a.play().catch(()=>{}); },{once:true});
+    a.load();
+  }
+  setTimeout(()=>old.forEach(u=>URL.revokeObjectURL(u)),1500);
+}
+function updateVolume(){
+  elVol.textContent=slider.value;
+  clearTimeout(volTimer);
+  volTimer=setTimeout(applyVolume,120);   // debounce while dragging
+}
 slider.addEventListener('input', updateVolume);
 slider.addEventListener('change', updateVolume);
 clearDroneWave();
@@ -296,5 +318,6 @@ clearDroneWave();
 
 
 </script>
-</body>
-</html>
+
+
+</body></html>
